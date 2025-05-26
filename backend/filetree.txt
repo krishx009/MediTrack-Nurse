@@ -1,0 +1,39 @@
+Folder PATH listing for volume OS
+Volume serial number is EE56-EE2E
+
+
+backend
+|   .env
+|   filetree.txt
+|   index.js
+|   package-lock.json
+|   package.json
+|   readme.md
+|   
+\---src
+    +---config
+    |       db.js
+    |       firebase.js
+    |       firebaseServiceAccountKey.json
+    |       
+    +---controllers
+    |       nurseController.js
+    |       patientController.js
+    |       visitController.js
+    |       
+    +---middleware
+    |       authMiddleware.js
+    |       uploadMiddleware.js
+    |       
+    +---models
+    |       Nurse.js
+    |       Patient.js
+    |       Visit.js
+    |       
+    +---routes
+    |       nurseRoutes.js
+    |       patientRoutes.js
+    |       visitRoutes.js
+    |       
+    \---uploads
+        \---documents

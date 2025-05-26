@@ -1,0 +1,446 @@
+// This file contains platform-specific utilities to isolate web and mobile code
+import 'dart:io' as io;
+import 'package:flutter/foundation.dart';
+import 'package:universal_html/html.dart' as html;
+import 'package:url_launcher/url_launcher.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:network_info_plus/network_info_plus.dart';
+
+class PlatformUtils {
+  // Check if running on web
+  static bool get isWeb => kIsWeb;
+
+  // Check if running on mobile
+  static bool get isMobile =>
+      !kIsWeb && (io.Platform.isAndroid || io.Platform.isIOS);
+
+  // Check if running on desktop
+  static bool get isDesktop =>
+      !kIsWeb &&
+      (io.Platform.isWindows || io.Platform.isMacOS || io.Platform.isLinux);
+
+  // Check if running on Android
+  static bool get isAndroid => !kIsWeb && io.Platform.isAndroid;
+
+  // Check if running on iOS
+  static bool get isIOS => !kIsWeb && io.Platform.isIOS;
+
+  // Check if running on a physical device (not emulator/simulator)
+  // Note: This is a simplified check that doesn't call the full isRunningOnEmulator/isRunningOnSimulator
+  // methods to avoid circular dependencies
+  static bool get isPhysicalDevice {
+    if (isWeb) return false;
+
+    try {
+      if (isAndroid) {
+        // Quick check for emulator without calling the full method
+        final String model = io.Platform.environment['ro.product.model'] ?? '';
+        final String hardware = io.Platform.environment['ro.hardware'] ?? '';
+        return !model.toLowerCase().contains('sdk') &&
+            !hardware.toLowerCase().contains('goldfish') &&
+            !hardware.toLowerCase().contains('ranchu');
+      } else if (isIOS) {
+        // Quick check for simulator without calling the full method
+        return !io.Platform.environment.containsKey('SIMULATOR_DEVICE_NAME');
+      }
+      return false;
+    } catch (e) {
+      debugPrint('Error checking physical device: $e');
+      return false;
+    }
+  }
+
+  // Open URL in browser
+  static Future<bool> openUrl(String url) async {
+    try {
+      // Ensure URL is properly formatted
+      final String formattedUrl =
+          url.startsWith('http') ? url : 'http://localhost:5000$url';
+
+      if (kIsWeb) {
+        // For web platform
+        html.window.open(formattedUrl, '_blank');
+        return true;
+      } else {
+        // For mobile/desktop platforms
+        final Uri uri = Uri.parse(formattedUrl);
+        if (await canLaunchUrl(uri)) {
+          return await launchUrl(uri, mode: LaunchMode.externalApplication);
+        } else {
+          debugPrint('Could not launch URL: $formattedUrl');
+          return false;
+        }
+      }
+    } catch (e) {
+      debugPrint('Error opening URL: $e');
+      return false;
+    }
+  }
+
+  // View file in browser (web only)
+  static void viewFileWeb(String url) {
+    if (kIsWeb) {
+      try {
+        // Ensure URL is properly formatted
+        final String formattedUrl =
+            url.startsWith('http') ? url : 'http://localhost:5000$url';
+        html.window.open(formattedUrl, '_blank');
+      } catch (e) {
+        debugPrint('Error opening URL in web browser: $e');
+      }
+    }
+  }
+
+  // Download file in browser (web only)
+  static void downloadFileWeb(String url, String fileName) {
+    if (kIsWeb) {
+      try {
+        // Ensure URL is properly formatted
+        final String formattedUrl =
+            url.startsWith('http') ? url : 'http://localhost:5000$url';
+        html.AnchorElement anchorElement =
+            html.AnchorElement(href: formattedUrl);
+        anchorElement.download = fileName;
+        anchorElement.click();
+      } catch (e) {
+        debugPrint('Error downloading file in web browser: $e');
+      }
+    }
+  }
+
+  // Store the server IP address - can be changed at runtime
+  static String _serverIp = '192.168.29.159'; // Default IP for Android emulator
+  static String _customServerIp =
+      '192.168.29.159'; // User-defined IP address (empty by default)
+  static bool _useCustomIp = true; // Flag to use custom IP
+
+  // Method to update the server IP address
+  static Future<void> updateServerIp(String newIp) async {
+    _customServerIp = newIp;
+    _useCustomIp = true;
+    // Save to shared preferences
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('server_ip', newIp);
+      await prefs.setBool('use_custom_ip', true);
+      debugPrint('Saved custom server IP to preferences: $newIp');
+    } catch (e) {
+      debugPrint('Error saving server IP: $e');
+    }
+  }
+
+  // Get the current server IP address
+  static String getServerIp() {
+    return _useCustomIp ? _customServerIp : _serverIp;
+  }
+
+  // Initialize server IP from SharedPreferences
+  static Future<void> initServerIp() async {
+    try {
+      // First, try to detect the best server IP based on the platform
+      // This ensures we have a reasonable default even if preferences fail
+      await _detectBestServerIp();
+
+      // Then try to load custom settings from preferences
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final savedIp = prefs.getString('server_ip');
+        final useCustom = prefs.getBool('use_custom_ip') ?? false;
+
+        if (savedIp != null && savedIp.isNotEmpty && useCustom) {
+          _customServerIp = savedIp;
+          _useCustomIp = true;
+          debugPrint(
+              'Initialized custom server IP from preferences: $_customServerIp');
+        }
+      } catch (prefsError) {
+        // If preferences fail, we already have a default from _detectBestServerIp
+        debugPrint('Error reading preferences: $prefsError');
+      }
+    } catch (e) {
+      debugPrint('Error initializing server IP: $e');
+    }
+  }
+
+  // Detect the best server IP based on the current environment
+  static Future<void> _detectBestServerIp() async {
+    try {
+      // For all platforms, first try to use the custom IP if it's set
+      if (_customServerIp.isNotEmpty) {
+        _serverIp = _customServerIp;
+        debugPrint('Using custom IP address: $_serverIp');
+        return;
+      }
+      
+      if (isAndroid) {
+        // Use a direct check instead of isRunningOnEmulator() to avoid potential circular dependencies
+        final String model = io.Platform.environment['ro.product.model'] ?? '';
+        final String hardware = io.Platform.environment['ro.hardware'] ?? '';
+        final bool isEmulator = model.toLowerCase().contains('sdk') ||
+            hardware.toLowerCase().contains('goldfish') ||
+            hardware.toLowerCase().contains('ranchu');
+
+        if (isEmulator) {
+          // For Android emulator, use 10.0.2.2 which maps to host's localhost
+          _serverIp = '10.0.2.2'; // Special IP for Android emulator to access host's localhost
+          debugPrint('Android emulator detected, using special emulator IP: $_serverIp');
+        } else {
+          // For physical Android devices, use the custom IP (which should be your development machine's IP)
+          _serverIp = '192.168.29.159'; // This should be your development machine's IP on the network
+          debugPrint('Physical Android device detected, using development machine IP: $_serverIp');
+          
+          // Also try to get the WiFi gateway as a backup
+          try {
+            final info = NetworkInfo();
+            final deviceIp = await info.getWifiIP();
+            debugPrint('Device IP address: $deviceIp');
+            
+            // Log this information but don't change the IP - just for debugging
+            final wifiGateway = await info.getWifiGatewayIP();
+            if (wifiGateway != null && wifiGateway.isNotEmpty) {
+              debugPrint('WiFi gateway detected: $wifiGateway (not using this)');
+            }
+          } catch (networkError) {
+            debugPrint('Error getting network info: $networkError');
+            // Keep using the development machine IP
+          }
+        }
+      } else if (isIOS) {
+        // Use a direct check instead of isRunningOnSimulator()
+        final bool isSimulator =
+            io.Platform.environment.containsKey('SIMULATOR_DEVICE_NAME');
+
+        if (isSimulator) {
+          // For iOS simulator, use localhost
+          _serverIp = 'localhost';
+          debugPrint('iOS simulator detected, using: $_serverIp');
+        } else {
+          // For physical iOS devices, try to get the WiFi gateway
+          try {
+            final info = NetworkInfo();
+            final wifiGateway = await info.getWifiGatewayIP();
+
+            if (wifiGateway != null && wifiGateway.isNotEmpty) {
+              _serverIp = wifiGateway;
+              debugPrint(
+                  'Physical iOS device detected, using WiFi gateway: $_serverIp');
+            } else {
+              // Fallback if gateway IP is not available
+              final deviceIp = await info.getWifiIP();
+              if (deviceIp != null && deviceIp.isNotEmpty) {
+                // Use the device IP but replace the last octet with .1 as a guess for the gateway
+                final ipParts = deviceIp.split('.');
+                if (ipParts.length == 4) {
+                  ipParts[3] = '1';
+                  _serverIp = ipParts.join('.');
+                  debugPrint('Using estimated gateway IP: $_serverIp');
+                }
+              }
+            }
+          } catch (networkError) {
+            debugPrint('Error getting network info: $networkError');
+            // Keep the default IP if there's an error
+          }
+        }
+      } else if (isDesktop) {
+        // For desktop platforms, use localhost
+        _serverIp = 'localhost';
+        debugPrint('Desktop platform detected, using: $_serverIp');
+      }
+    } catch (e) {
+      debugPrint('Error detecting best server IP: $e');
+    }
+  }
+
+  // Get platform-specific base URL for API
+  static String getBaseApiUrl() {
+    try {
+      // If user has set a custom IP, always use that regardless of platform
+      if (_useCustomIp && _customServerIp.isNotEmpty) {
+        debugPrint('Using custom configured IP: $_customServerIp');
+        return 'http://$_customServerIp:5000/api';
+      }
+
+      if (kIsWeb) {
+        // For web platform, try to use the current origin to avoid CORS issues
+        try {
+          final currentUrl = html.window.location.href;
+          final uri = Uri.parse(currentUrl);
+          final origin =
+              '${uri.scheme}://${uri.host}${uri.port != 80 && uri.port != 443 ? ":${uri.port}" : ""}';
+          debugPrint('Running on web, using origin: $origin');
+          return '$origin/api';
+        } catch (webError) {
+          debugPrint(
+              'Error getting web origin: $webError, falling back to relative URL');
+          return '/api';
+        }
+      } else if (isAndroid) {
+        final String ipToUse = getServerIp();
+        // Avoid calling isRunningOnEmulator() again to prevent potential issues
+        debugPrint('Running on Android, using IP: $ipToUse');
+        return 'http://$ipToUse:5000/api';
+      } else if (isIOS) {
+        final String ipToUse = getServerIp();
+        // Avoid calling isRunningOnSimulator() again to prevent potential issues
+        debugPrint('Running on iOS, using IP: $ipToUse');
+        return 'http://$ipToUse:5000/api';
+      } else if (isDesktop) {
+        // Desktop platforms
+        debugPrint('Running on desktop, using localhost');
+        return 'http://localhost:5000/api';
+      } else {
+        // Other platforms
+        debugPrint('Unknown platform, using localhost');
+        return 'http://localhost:5000/api';
+      }
+    } catch (e) {
+      // Fallback in case of any error
+      debugPrint('Error in getBaseApiUrl: $e');
+      return 'http://localhost:5000/api';
+    }
+  }
+
+  // Check current network connectivity
+  static Future<bool> isConnectedToNetwork() async {
+    try {
+      final connectivityResult = await Connectivity().checkConnectivity();
+      final hasConnection = connectivityResult != ConnectivityResult.none;
+      debugPrint(
+          'Network connectivity check: $connectivityResult (connected: $hasConnection)');
+      return hasConnection;
+    } catch (e) {
+      debugPrint('Error checking network connectivity: $e');
+      return false;
+    }
+  }
+
+  // Get the device's current WiFi IP address
+  static Future<String?> getDeviceIpAddress() async {
+    try {
+      final info = NetworkInfo();
+      final ip = await info.getWifiIP();
+      debugPrint('Device IP address: $ip');
+      return ip;
+    } catch (e) {
+      debugPrint('Error getting device IP address: $e');
+      return null;
+    }
+  }
+
+  // Test server connectivity
+  static Future<bool> testServerConnectivity() async {
+    final baseUrl = getBaseApiUrl();
+    final testUrl =
+        baseUrl.endsWith('/') ? '${baseUrl}health' : '$baseUrl/health';
+
+    try {
+      debugPrint('Testing server connectivity at: $testUrl');
+      final response = await io.HttpClient()
+          .getUrl(Uri.parse(testUrl))
+          .then((request) => request.close())
+          .then((response) => response.statusCode);
+
+      final isConnected = response >= 200 && response < 400;
+      debugPrint(
+          'Server connectivity test result: $response (connected: $isConnected)');
+      return isConnected;
+    } catch (e) {
+      debugPrint('Server connectivity test failed: $e');
+      return false;
+    }
+  }
+
+  // Get detailed server info for debugging
+  static Future<Map<String, dynamic>> getServerDebugInfo() async {
+    final Map<String, dynamic> debugInfo = {};
+
+    try {
+      debugInfo['platform'] = kIsWeb ? 'web' : io.Platform.operatingSystem;
+      debugInfo['isPhysicalDevice'] = isPhysicalDevice;
+      debugInfo['serverIp'] = getServerIp();
+      debugInfo['customServerIp'] = _customServerIp;
+      debugInfo['useCustomIp'] = _useCustomIp;
+      debugInfo['baseApiUrl'] = getBaseApiUrl();
+
+      try {
+        debugInfo['deviceIp'] = await getDeviceIpAddress() ?? 'unknown';
+      } catch (e) {
+        debugInfo['deviceIp'] = 'error: $e';
+      }
+
+      try {
+        debugInfo['networkConnected'] = await isConnectedToNetwork();
+      } catch (e) {
+        debugInfo['networkConnected'] = 'error: $e';
+      }
+
+      try {
+        debugInfo['serverConnected'] = await testServerConnectivity();
+      } catch (e) {
+        debugInfo['serverConnected'] = 'error: $e';
+      }
+
+      debugPrint('Server debug info: $debugInfo');
+      return debugInfo;
+    } catch (e) {
+      debugPrint('Error getting server debug info: $e');
+      return {'error': e.toString()};
+    }
+  }
+
+  // Check if running on an Android emulator
+  static bool isRunningOnEmulator() {
+    try {
+      if (!io.Platform.isAndroid) return false;
+
+      // More comprehensive check for emulator
+      // Check for known emulator properties
+      final String brand = io.Platform.environment['ro.product.brand'] ?? '';
+      final String model = io.Platform.environment['ro.product.model'] ?? '';
+      final String manufacturer =
+          io.Platform.environment['ro.product.manufacturer'] ?? '';
+      final String fingerprint =
+          io.Platform.environment['ro.build.fingerprint'] ?? '';
+      final String hardware = io.Platform.environment['ro.hardware'] ?? '';
+
+      // Lower case everything for case-insensitive comparison
+      final lBrand = brand.toLowerCase();
+      final lModel = model.toLowerCase();
+      final lManufacturer = manufacturer.toLowerCase();
+      final lFingerprint = fingerprint.toLowerCase();
+      final lHardware = hardware.toLowerCase();
+
+      // Check for common emulator indicators
+      return lBrand.contains('android') ||
+          lBrand.contains('google') ||
+          lModel.contains('sdk') ||
+          lModel.contains('emulator') ||
+          lModel.contains('android sdk built for') ||
+          lManufacturer.contains('genymotion') ||
+          lFingerprint.contains('generic') ||
+          lFingerprint.contains('unknown') ||
+          lHardware.contains('goldfish') ||
+          lHardware.contains('ranchu') ||
+          io.Platform.environment.containsKey('ANDROID_EMULATOR');
+    } catch (e) {
+      debugPrint('Error checking for emulator: $e');
+      // When in doubt (error occurred), assume it's a real device
+      return false;
+    }
+  }
+
+  // Check if running on an iOS simulator
+  static bool isRunningOnSimulator() {
+    try {
+      if (!io.Platform.isIOS) return false;
+
+      // This is a simple heuristic that works in most cases
+      // A more robust solution would use device_info_plus to check the device model
+      return io.Platform.environment.containsKey('SIMULATOR_DEVICE_NAME');
+    } catch (e) {
+      return false;
+    }
+  }
+}

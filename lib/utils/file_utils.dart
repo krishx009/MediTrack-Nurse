@@ -7,7 +7,7 @@ import 'package:mime/mime.dart';
 
 class FileUtils {
   // Maximum file size (20MB)
-  static const int maxFileSize = 20 * 1024 * 1024;
+  static const int maxFileSize = 10 * 1024 * 1024; //10MB max file size
   
   // Common file extensions by category (for reference and categorization)
   static const List<String> imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'svg'];
